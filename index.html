@@ -1,0 +1,324 @@
+<html>
+  <head>
+    <title>WebVTT Translation</title>
+    <link rel="stylesheet" href="https://unpkg.com/vue-material@0.8.1/dist/vue-material.css">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,400,500,700,400italic">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons">
+
+<style>
+#app {
+  padding: 16px;
+}
+.translated {
+  color: #3f51b5;
+  background-color: #ddf;
+  border-top: 2px solid #3f51b5;
+}
+.translated:hover {
+  background-color: #ccf;
+}
+.translated .md-input-container {
+  padding-top: 8px;
+  margin-bottom: 16px;
+}
+.dividable.md-table-row:hover {
+  border-top: 1px solid #3f51b5 !important;
+}
+.dividable.md-table-row.beginning {
+  border-top: 2px solid #3f51b5 !important;
+}
+.dividable.md-table-row.beginning:hover {
+  border-top: 2px solid #ff5722 !important;
+}
+[v-cloak] {
+  display: none;
+}
+</style>
+
+  </head>
+  <body>
+    <div id="app" v-cloak>
+      <md-input-container>
+        <label>入力ファイル</label>
+        <md-select v-model="inputfile" @change="getVtt">
+          <!-- <md-option value="example.mp4">EXAMPLE</md-option> -->
+        </md-select>
+      </md-input-container>
+      <md-input-container>
+        <label>WebVTT</label>
+        <md-textarea v-model="webVtt"></md-textarea>
+      </md-input-container>
+      <md-layout :md-gutter="16">
+        <md-layout md-flex="50">
+          <md-input-container>
+            <label>言語（原文）</label>
+            <md-select v-model="source">
+              <md-option value="auto">自動検出</md-option>
+              <md-option value="en">英語</md-option>
+              <md-option value="ja">日本語</md-option>
+              <md-option value="fr">フランス語</md-option>
+              <md-option value="de">ドイツ語</md-option>
+              <md-option value="it">イタリア語</md-option>
+              <md-option value="ko">韓国語</md-option>
+              <md-option value="ru">ロシア語</md-option>
+              <md-option value="es">スペイン語</md-option>
+            </md-select>
+          </md-input-container>
+        </md-layout>
+        <md-layout md-flex="50">
+          <md-input-container>
+            <label>言語（訳文）</label>
+            <md-select v-model="target">
+              <md-option value="en">英語</md-option>
+              <md-option value="ja">日本語</md-option>
+              <md-option value="fr">フランス語</md-option>
+              <md-option value="de">ドイツ語</md-option>
+              <md-option value="it">イタリア語</md-option>
+              <md-option value="ko">韓国語</md-option>
+              <md-option value="ru">ロシア語</md-option>
+              <md-option value="es">スペイン語</md-option>
+            </md-select>
+          </md-input-container>
+        </md-layout>
+        <md-layout md-flex="50">
+          <md-input-container>
+            <label>翻訳サービス</label>
+            <md-select v-model="translator">
+              <md-option value="gcloud">Google Cloud Translation API</md-option>
+              <md-option value="azure">Microsoft Azure Translator Text API</md-option>
+              <md-option value="watson">IBM Bluemix Watson Language Translator</md-option>
+            </md-select>
+          </md-input-container>
+        </md-layout>
+      </md-layout>
+      <md-button class="md-raised" @click.native="parseVtt">構文解析</md-button>
+      <md-button class="md-raised" v-if="stage === 'analyzed' || stage === 'translating' || stage === 'translated'" @click.native="translate">翻訳</md-button>
+
+      <md-table v-if="stage !== 'waiting' && stage !== 'analyzing'">
+        <md-table-header>
+          <md-table-row>
+            <md-table-head style="min-width: 230px; max-width: 230px;">表示時刻</md-table-head>
+            <md-table-head>原文</md-table-head>
+          </md-table-row>
+        </md-table-header>
+        <md-table-body>
+          <md-table-row v-for="cue in merged" key="cue.index" @click.native="onRowClicked(cue.index)"
+            :class="{ dividable: stage === 'analyzed', translated: cue.translatedText.length, beginning: cue.beginning }">
+            <md-table-cell>
+              {{ sec2time(cue.start) }} -&gt; {{ sec2time(cue.end) }}
+            </md-table-cell>
+            <md-table-cell>
+              <div v-if="cue.originalText.length">{{ cue.originalText }}</div>
+              <md-input-container v-else>
+                <md-textarea v-model="cue.translatedText"></md-textarea>
+              </md-input-container>
+            </md-table-cell>
+          </md-table-row>
+        </md-table-body>
+      </md-table>
+
+      <md-button class="md-raised" @click.native="downloadVtt" v-if="stage === 'translated'">WebVTT 生成</md-button>
+      <md-button class="md-raised" @click.native="speakAll" v-if="stage === 'translated'">吹替版生成</md-button>
+      <span style="line-height: 48px; padding-left: 12px;">{{ message }}</span>
+
+      <video v-if="videoUrl" :src="videoUrl" width="640" height="360" style="margin-top: 24px;" controls />
+    </div>
+
+    <script src="https://unpkg.com/vue@2.6.10/dist/vue.min.js"></script>
+    <script src="https://unpkg.com/vue-material@0.8.1/dist/vue-material.js"></script>
+    <script src="https://unpkg.com/axios@0.18.0/dist/axios.min.js"></script>
+
+<script>
+Vue.use(VueMaterial);
+
+const vm = new Vue({
+  el: '#app',
+  data() {
+    return {
+      cues: [],
+      gender: 'female',
+      hovered: null,
+      inputfile: 'example.mp4',
+      source: 'auto',
+      stage: 'waiting',
+      message: '',
+      mp3count: 0,
+      target: 'en',
+      translations: [],
+      translator: 'gcloud',
+      webVtt: '',
+      videoUrl: '',
+    };
+  },
+  computed: {
+    merged() {
+      const list = this.cues;
+      for (let i = 0; i < this.translations.length; i++) {
+        index = this.translations[i].index + i;
+        list.splice(index, 0, this.translations[i]);
+      }
+      return list;
+    },
+  },
+  created() {
+    this.getVtt();
+  },
+  methods: {
+    getVtt() {
+      const vm = this;
+      axios.get(this.inputfile + '.vtt').then(function(response) {
+        vm.webVtt = response.data;
+      });
+    },
+    parseVtt() {
+      this.stage = 'analyzing';
+      this.cues = [];
+      const lines = this.webVtt.replace(/\r\n|\r/g, '\n').split('\n');
+      for (let i = 1; i < lines.length - 1; i++) {
+        if (lines[i].match(/[0-9:.]+\s+-->\s+[0-9:.]+/)) {
+          const index = lines[i - 1];
+          if (index.length > 0 && !isNaN(index)) {
+            const start = this.time2sec(lines[i].match(/([0-9:.]+)\s+-->\s+[0-9:.]+/)[1]);
+            const end = this.time2sec(lines[i].match(/[0-9:.]+\s+-->\s+([0-9:.]+)/)[1]);
+            let originalText = '';
+            for (let j = 1; i + j < lines.length; j++) {
+              if (lines[i + j].length === 0) break;
+              originalText += lines[i + j] + '\n';
+            }
+            originalText = originalText.substr(0, originalText.length - 1);
+            this.cues.push({
+              index: index,
+              start: start,
+              end: end,
+              beginning: false,
+              originalText: originalText,
+              translatedText: '',
+              audio: null,
+            });
+          }
+        }
+      }
+      this.analyzeSyntax();
+    },
+    analyzeSyntax() {
+      const vm = this;
+      axios.post('syntax.php', {
+        cues: this.cues,
+      }).then(function(response) {
+        vm.source = response.data.language;
+        for (let i = 0; i < response.data.beginnings.length; i++) {
+          vm.cues[response.data.beginnings[i]].beginning = true;
+        }
+        vm.stage = 'analyzed';
+      });
+    },
+    onRowClicked(index) {
+      for (let i = 0; i < this.cues.length; i++) {
+        if (this.cues[i].index === index) {
+          this.cues[i].beginning = !this.cues[i].beginning;
+        }
+      }
+    },
+    translate() {
+      this.stage = 'translating';
+      const vm = this;
+      axios.post('translate.php', {
+        source: this.source,
+        target: this.target,
+        translator: this.translator,
+        cues: this.cues,
+      }).then(function(response) {
+        vm.translations = [];
+        for (let i = 0; i < response.data.translations.length; i++) {
+          index = response.data.translations[i].index;
+          vm.translations.push({
+            index: index,
+            start: vm.cues[index].start,
+            end: vm.sentenceEnd(index),
+            beginning: false,
+            originalText: '',
+            translatedText: response.data.translations[i].translation,
+            audio: null,
+          });
+        }
+        vm.stage = 'translated';
+      });
+    },
+    downloadVtt() {
+      const vtt = this.createVtt();
+      const blob = new Blob([vtt], { type: 'text/plain' });
+      const link = document.createElement('a');
+      link.href = (window.URL || window.webkitURL).createObjectURL(blob);
+      const basename = this.inputfile.match(new RegExp('^(.+)\\.[^\\.]+$'));
+      link.download = `${basename ? basename[1] : this.originalfilename}.vtt`;
+      document.body.appendChild(link);
+      link.click();
+    },
+    createVtt() {
+      let vtt = 'WEBVTT';
+      for (let i = 0; i < this.translations.length; i++) {
+        const start = this.sec2time(this.translations[i].start);
+        const end = this.sec2time(this.translations[i].end);
+        const text = this.translations[i].translatedText;
+        vtt += `\n\n${i}\n${start} --> ${end}\n${text}`;
+      }
+      return vtt;
+    },
+    speak(index) {
+      const vm = this;
+      axios.post('speak.php', {
+        index: index,
+        language: this.target,
+        gender: this.gender,
+        text: this.translations[index].translatedText,
+      }).then(function(response) {
+        vm.mp3count += 1;
+        if (vm.mp3count === vm.translations.length) {
+          vm.dubbing();
+        }
+      });
+    },
+    speakAll() {
+      this.message = '音声取得中...';
+      for (let i = 0; i < this.translations.length; i++) {
+        this.speak(i);
+      }
+    },
+    dubbing() {
+      const vm = this;
+      this.message = '吹替版生成中...';
+      axios.post('dubbing.php', {
+        inputfile: this.inputfile,
+        cues: this.translations,
+      }).then(function(response) {
+        vm.videoUrl = response.data.filename;
+        vm.message = '';
+      });
+    },
+    time2sec(string) {
+      const split = string.split(':');
+      if (split.length === 2) {
+        return (parseInt(split[0], 10) * 60) + parseFloat(split[1]);
+      }
+      return (parseInt(split[0], 10) * 3600) + (parseInt(split[1], 10) * 60) + parseFloat(split[2]);
+    },
+    sec2time(second) {
+      const hour = ('0' + Math.floor(second / 3600)).slice(-2);
+      const min = ('0' + Math.floor((second % 3600) / 60)).slice(-2);
+      const sec = ('0' + (second % 60).toFixed(3)).slice(-6);
+      return hour + ':' + min + ':' + sec;
+    },
+    sentenceEnd(index) {
+      for (let i = index + 1; i < this.cues.length; i++) {
+        if (this.cues[i].beginning) {
+          return this.cues[i - 1].end;
+        }
+      }
+      return this.cues[this.cues.length - 1].end;
+    },
+  },
+});
+</script>
+
+  </body>
+</html>
